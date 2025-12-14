@@ -1,6 +1,5 @@
 from __future__ import annotations
 import numpy as np
-import pandas as pd
 from mesa import Model
 from mesa.time import RandomActivation
 from mesa.datacollection import DataCollector
@@ -55,6 +54,8 @@ class MarketABM(Model):
 
         self.mid_series = []
         self.trade_series = []
+        self.mm_inventory_series = []
+
 
         # Seed book with initial liquidity so mid exists
         self._seed_initial_book(S0)
@@ -83,12 +84,13 @@ class MarketABM(Model):
                 "spread": lambda m: m.lob.spread(),
                 "fundamental": lambda m: m.fundamental_value,
                 "n_trades": lambda m: len(m.lob.trades),
-                "last_trade": lambda m: m.lob.last_trade_price
+                "last_trade": lambda m: m.lob.last_trade_price,
+                "mm_inventory": lambda m: m.mm_inventory_series[-1]
             }
         )
 
+
     def _seed_initial_book(self, S0: float):
-        # Create a simple initial spread
         self.lob.add_order(self._mk_order(agent_id=-1, side="buy", qty=10, price=S0 - 0.05, tif=10))
         self.lob.add_order(self._mk_order(agent_id=-2, side="sell", qty=10, price=S0 + 0.05, tif=10))
 
@@ -99,12 +101,10 @@ class MarketABM(Model):
     def current_mid(self):
         mid = self.lob.mid()
         if mid is None:
-            # fallback to last trade or fundamental
             return self.lob.last_trade_price if self.lob.last_trade_price is not None else self.fundamental_value
         return mid
 
     def short_signal(self, lookback: int = 5):
-        # sign of recent average return
         if len(self.mid_series) < lookback + 1:
             return 0.0
         arr = np.array(self.mid_series[-(lookback+1):], dtype=float)
@@ -112,7 +112,7 @@ class MarketABM(Model):
         return float(np.mean(rets))
 
     def _update_fundamental(self):
-        # mean-reverting fundamental (OU in log-space approx)
+        # mean-reverting fundamental
         # F_{t+1} = F_t + kappa*(S0 - F_t) + vol*eps
         eps = np.random.randn()
         drift = self.fundamental_kappa * (self.mid_series[0] - self.fundamental_value) if self.mid_series else 0.0
@@ -125,13 +125,18 @@ class MarketABM(Model):
         self._update_fundamental()
         self.schedule.step()
 
-        # record mid and trades
         self.mid_series.append(self.current_mid())
         if self.lob.last_trade_price is not None:
             self.trade_series.append(self.lob.last_trade_price)
 
-        self.datacollector.collect(self)
+        mm_inv = 0.0
+        for agent in self.schedule.agents:
+            if isinstance(agent, DeltaHedgingOptionMM):
+                mm_inv += getattr(agent, "inventory", 0.0)
+        self.mm_inventory_series.append(mm_inv)
 
+
+        self.datacollector.collect(self)
         self.t += 1
 
     def run(self):

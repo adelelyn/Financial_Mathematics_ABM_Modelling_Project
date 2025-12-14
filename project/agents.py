@@ -12,7 +12,6 @@ def bs_call_price_delta(S: float, K: float, r: float, sigma: float, T: float):
     Black–Scholes European call price + delta.
     """
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
-        # Degenerate fallback
         price = max(S - K, 0.0)
         delta = 1.0 if S > K else 0.0
         return price, delta
@@ -36,16 +35,28 @@ class BaseTrader(Agent):
         self.inv = inv if inv is not None else Inventory()
 
     def place_limit(self, side: str, qty: int, price: float, tif: int = 5):
-        self.model.lob.add_order(Order(self.unique_id, side, qty, price, self.model.t, tif))
+        self.model.lob.add_order(
+            Order(
+                self.unique_id, side, qty, price,
+                self.model.t, tif,
+                order_type="limit",
+                is_market=False
+            )
+        )
 
     def place_market(self, side: str, qty: int):
-        self.model.lob.add_order(Order(self.unique_id, side, qty, None, self.model.t, tif=1))
+        self.model.lob.add_order(
+            Order(
+                self.unique_id, side, qty, None,
+                self.model.t, tif=1,
+                order_type="market",
+                is_market=True
+            )
+        )
+
 
 
 class Fundamentalist(BaseTrader):
-    """
-    Trades vs mispricing to fundamental value.
-    """
     def __init__(self, unique_id, model, fundamental_sigma: float = 0.02, aggression: float = 0.7):
         super().__init__(unique_id, model)
         self.fundamental_sigma = fundamental_sigma
@@ -72,9 +83,6 @@ class Fundamentalist(BaseTrader):
 
 
 class NoiseTrader(BaseTrader):
-    """
-    Random liquidity-taking orders.
-    """
     def __init__(self, unique_id, model, p_trade: float = 0.25, max_qty: int = 3):
         super().__init__(unique_id, model)
         self.p_trade = p_trade
@@ -106,7 +114,6 @@ class HFT(BaseTrader):
         if S_mid is None:
             return
 
-        # short-horizon signal from last mid returns
         signal = self.model.short_signal()
 
         if self.random.random() < self.p_take:
@@ -116,7 +123,6 @@ class HFT(BaseTrader):
             else:
                 self.place_market("sell", qty)
 
-        # fast quotes (very short TIF) around mid
         if self.quote and self.random.random() < 0.5:
             spr = self.model.lob.spread()
             spr = spr if spr is not None else 0.02
@@ -140,7 +146,7 @@ class DeltaHedgingOptionMM(BaseTrader):
         self,
         unique_id,
         model,
-        q_opt: float = 50.0,          # net call options (positive => long call)
+        q_opt: float = 50.0,        
         risk_aversion: float = 0.02,
         base_spread: float = 0.04,
         max_quote_qty: int = 3
@@ -150,6 +156,8 @@ class DeltaHedgingOptionMM(BaseTrader):
         self.risk_aversion = risk_aversion
         self.base_spread = base_spread
         self.max_quote_qty = max_quote_qty
+        self.inventory = 0.0
+        self.cash = 0.0
 
     def step(self):
         S_mid = self.model.current_mid()
@@ -163,7 +171,6 @@ class DeltaHedgingOptionMM(BaseTrader):
         target_stock = -self.q_opt * delta
         inv_err = self.inv.stock - target_stock
 
-        # Inventory-aware quoting (Avellaneda–Stoikov-like skew, simplified)
         spr = self.base_spread + self.risk_aversion * abs(inv_err) * 0.01
         skew = self.risk_aversion * inv_err * 0.01
 
@@ -174,11 +181,9 @@ class DeltaHedgingOptionMM(BaseTrader):
         self.place_limit("buy", qty, bid, tif=5)
         self.place_limit("sell", qty, ask, tif=5)
 
-        # Delta-hedge with an extra market order if too far from target
         if abs(inv_err) > 15:
             hedge_qty = int(min(5, abs(inv_err)))
             if inv_err > 0:
-                # too much stock -> sell
                 self.place_market("sell", hedge_qty)
             else:
                 self.place_market("buy", hedge_qty)

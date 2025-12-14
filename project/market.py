@@ -7,11 +7,13 @@ import numpy as np
 @dataclass
 class Order:
     agent_id: int
-    side: str          # "buy" or "sell"
+    side: str # "buy" or "sell"
     qty: int
-    price: Optional[float]  # None => market order
+    price: Optional[float] 
     time: int
-    tif: int = 1       # time-in-force (steps); for fast-cancel / short-lived limits
+    tif: int = 1
+    order_type: str = "limit"  
+    is_market: bool = False
 
 
 class SimpleLOB:
@@ -82,7 +84,6 @@ class SimpleLOB:
     def _match_buy(self, order: Order):
         while order.qty > 0 and self.asks:
             best = self.asks[0]
-            # If limit buy, only match if price >= best ask
             if order.price is not None and order.price < best.price:
                 break
             trade_qty = min(order.qty, best.qty)
@@ -91,8 +92,14 @@ class SimpleLOB:
             best.qty -= trade_qty
             self.last_trade_price = trade_price
             self.trades.append({
-                "t": self._t, "price": trade_price, "qty": trade_qty,
-                "buyer": order.agent_id, "seller": best.agent_id
+                "t": self._t,
+                "price": trade_price,
+                "qty": trade_qty,
+                "buyer": order.agent_id,
+                "seller": best.agent_id,
+                "aggressor_id": order.agent_id,
+                "order_type": order.order_type,
+                "is_aggressive": order.is_market
             })
             if best.qty == 0:
                 self.asks.pop(0)
@@ -100,7 +107,6 @@ class SimpleLOB:
     def _match_sell(self, order: Order):
         while order.qty > 0 and self.bids:
             best = self.bids[0]
-            # If limit sell, only match if price <= best bid
             if order.price is not None and order.price > best.price:
                 break
             trade_qty = min(order.qty, best.qty)
@@ -109,14 +115,20 @@ class SimpleLOB:
             best.qty -= trade_qty
             self.last_trade_price = trade_price
             self.trades.append({
-                "t": self._t, "price": trade_price, "qty": trade_qty,
-                "buyer": best.agent_id, "seller": order.agent_id
+                "t": self._t,
+                "price": trade_price,
+                "qty": trade_qty,
+                "buyer": order.agent_id,
+                "seller": best.agent_id,
+                "aggressor_id": order.agent_id,
+                "order_type": order.order_type,
+                "is_aggressive": order.is_market
             })
+
             if best.qty == 0:
                 self.bids.pop(0)
 
     def _expire_orders(self):
-        # Remove orders whose tif ended
         def alive(o: Order) -> bool:
             return (self._t - o.time) < o.tif
 

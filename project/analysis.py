@@ -1,52 +1,64 @@
 import numpy as np
-import pandas as pd
-from scipy.stats import ttest_ind, mannwhitneyu, ks_2samp
 from market import realized_vol
 
-
-def compute_metrics(df: pd.DataFrame) -> dict:
-    mid = df["mid"].astype(float).values
-    spread = df["spread"].astype(float).values
-
-    # log returns
-    rets = np.diff(np.log(mid))
-    rv = realized_vol(rets, annualize_factor=252.0)
-
-    out = {
-        "realized_vol": rv,
-        "avg_spread": np.nanmean(spread),
-        "spread_p95": np.nanpercentile(spread[~np.isnan(spread)], 95) if np.any(~np.isnan(spread)) else np.nan,
-        "kurtosis_proxy": np.nanmean(((rets - np.nanmean(rets)) / (np.nanstd(rets) + 1e-12))**4) if len(rets) > 10 else np.nan,
-        "n_obs": len(mid)
+def format_test_result(
+    hypothesis: str,
+    test_name: str,
+    rationale: str,
+    statistic: float,
+    p_value: float,
+    alpha: float = 0.05,
+    extra: dict | None = None
+):
+    return {
+        "hypothesis": hypothesis,
+        "test": test_name,
+        "rationale": rationale,
+        "statistic": statistic,
+        "p_value": p_value,
+        "alpha": alpha,
+        "reject_H0": p_value < alpha,
+        **(extra or {})
     }
-    return out
 
 
-def run_tests(metric_list_A, metric_list_B, key: str, alpha: float = 0.05):
-    A = np.array([m[key] for m in metric_list_A], dtype=float)
-    B = np.array([m[key] for m in metric_list_B], dtype=float)
-
-    A = A[~np.isnan(A)]
-    B = B[~np.isnan(B)]
-
-    res = {}
-
-    # t-test
-    t_stat, t_p = ttest_ind(A, B, equal_var=False)
-    res["t_test"] = {"stat": float(t_stat), "p": float(t_p), "reject": bool(t_p < alpha)}
-
-    # Mann-Whitney
-    if len(A) > 0 and len(B) > 0:
-        u_stat, u_p = mannwhitneyu(A, B, alternative="two-sided")
-        res["mann_whitney"] = {"stat": float(u_stat), "p": float(u_p), "reject": bool(u_p < alpha)}
-
-    return res
+def price_inefficiency(df):
+    return np.abs(df["mid"] - df["fundamental"])
 
 
-def ks_test_returns(dfA: pd.DataFrame, dfB: pd.DataFrame, alpha: float = 0.05):
-    midA = dfA["mid"].astype(float).values
-    midB = dfB["mid"].astype(float).values
-    rA = np.diff(np.log(midA))
-    rB = np.diff(np.log(midB))
-    stat, p = ks_2samp(rA, rB)
-    return {"ks_stat": float(stat), "p": float(p), "reject": bool(p < alpha)}
+def tail_events(returns, k=3):
+    sigma = np.nanstd(returns)
+    return np.abs(returns) > k * sigma
+
+
+def compute_rv(df):
+    mid = df["mid"].values
+    rets = np.diff(np.log(mid))
+    return realized_vol(rets)
+
+def hft_aggression(trades, vol, q=0.75):
+    thresh = np.quantile(vol, q)
+
+    t = trades["t"].values
+    mask = (t >= 0) & (t < len(vol))
+    trades = trades.loc[mask].copy()
+    t = t[mask]
+
+    hi_mask = vol[t] > thresh
+    lo_mask = ~hi_mask
+
+    def frac_aggr(df):
+        if len(df) == 0:
+            return np.nan
+        return np.mean(df["order_type"] == "market")
+
+    aggr_hi = frac_aggr(trades.loc[hi_mask])
+    aggr_lo = frac_aggr(trades.loc[lo_mask])
+
+    return aggr_hi, aggr_lo
+
+def implied_vol_proxy(mm_inventory):
+    return np.abs(np.diff(mm_inventory))
+
+def iv_rv_gap(iv, rv):
+    return np.abs(iv - rv)
